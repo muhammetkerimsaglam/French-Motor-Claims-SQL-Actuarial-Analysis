@@ -1,0 +1,186 @@
+SELECT 
+    "BonusMalus" AS bonus_malus_skoru,
+    COUNT(*) AS toplam_police_adedi,
+    ROUND(SUM("Exposure"), 2) AS toplam_maruziyet_yili,
+    SUM("ClaimNb") AS toplam_hasar_adedi,
+    -- Hasar Frekansı = Toplam Hasar / Toplam Maruziyet
+    ROUND(SUM("ClaimNb") / SUM("Exposure"), 4) AS hasar_frekansi
+FROM table_policies
+GROUP BY "BonusMalus"
+ORDER BY "BonusMalus" ASC;
+
+SELECT 
+    CASE 
+        WHEN p."DrivAge" BETWEEN 18 AND 25 THEN '18-25 (Genç Sürücü)'
+        WHEN p."DrivAge" BETWEEN 26 AND 40 THEN '26-40 (Genç Yetişkin)'
+        WHEN p."DrivAge" BETWEEN 41 AND 60 THEN '41-60 (Deneyimli)'
+        ELSE '60+ (Kıdemli)'
+    END AS surucu_yas_grubu,
+    v."VehGas" AS arac_yakit_turu,
+    COUNT(*) AS toplam_police_adedi,
+    SUM(p."ClaimNb") AS toplam_hasar_adedi,
+    ROUND(SUM(p."ClaimNb") / SUM(p."Exposure"), 4) AS segment_hasar_frekansi
+FROM table_policies p
+JOIN table_vehicles v ON p.vehicle_id = v.vehicle_id
+GROUP BY 
+    CASE 
+        WHEN p."DrivAge" BETWEEN 18 AND 25 THEN '18-25 (Genç Sürücü)'
+        WHEN p."DrivAge" BETWEEN 26 AND 40 THEN '26-40 (Genç Yetişkin)'
+        WHEN p."DrivAge" BETWEEN 41 AND 60 THEN '41-60 (Deneyimli)'
+        ELSE '60+ (Kıdemli)'
+    END,
+    v."VehGas"
+ORDER BY surucu_yas_grubu, segment_hasar_frekansi DESC;
+
+WITH zone_density_summary AS (
+    SELECT 
+        CASE 
+            WHEN r."Density" < 100 THEN 'Düşük Yoğunluk (Kırsal)'
+            WHEN r."Density" BETWEEN 100 AND 500 THEN 'Orta Yoğunluk (Kasaba/Küçük Şehir)'
+            WHEN r."Density" BETWEEN 501 AND 2000 THEN 'Yüksek Yoğunluk (Şehir)'
+            ELSE 'Çok Yüksek Yoğunluk (Metropol)'
+        END AS yogunluk_segmenti,
+        COUNT(*) AS toplam_police_adedi,
+        SUM(p."ClaimNb") AS toplam_hasar_adedi,
+        SUM(p."Exposure") AS toplam_maruziyet
+    FROM table_policies p
+    JOIN table_regions r ON p."Region" = r."Region" AND p."Area" = r."Area"
+    GROUP BY 
+        CASE 
+            WHEN r."Density" < 100 THEN 'Düşük Yoğunluk (Kırsal)'
+            WHEN r."Density" BETWEEN 100 AND 500 THEN 'Orta Yoğunluk (Kasaba/Küçük Şehir)'
+            WHEN r."Density" BETWEEN 501 AND 2000 THEN 'Yüksek Yoğunluk (Şehir)'
+            ELSE 'Çok Yüksek Yoğunluk (Metropol)'
+        END
+)
+SELECT 
+    yogunluk_segmenti,
+    toplam_police_adedi,
+    toplam_hasar_adedi,
+    ROUND(toplam_hasar_adedi / toplam_maruziyet, 4) AS segment_hasar_frekansi,
+    -- Window Function kullanarak kümülatif poliçe toplamını alıyoruz
+    SUM(toplam_police_adedi) OVER(ORDER BY toplam_hasar_adedi / toplam_maruziyet ASC) AS kumulatif_police_toplami,
+    -- Her segmentin genel portföydeki payını yüzdesel hesaplıyoruz
+    ROUND(100.0 * toplam_police_adedi / (SELECT SUM(toplam_police_adedi) FROM zone_density_summary), 2) AS segment_portfoy_payi_yuzde
+FROM zone_density_summary
+ORDER BY segment_hasar_frekansi DESC;
+
+SELECT 
+    v."VehBrand" AS arac_marka_kodu,
+    COUNT(*) AS kaliteli_police_adedi,
+    ROUND(AVG(p."DrivAge"), 1) AS ortalama_surucu_yasi,
+    ROUND(AVG(p."BonusMalus"), 1) AS ortalama_bm_skoru,
+    SUM(p."ClaimNb") AS toplam_hasar_adedi,
+    ROUND(SUM(p."ClaimNb") / SUM(p."Exposure"), 4) AS segment_hasar_frekansi
+FROM table_policies p
+JOIN table_vehicles v ON p.vehicle_id = v.vehicle_id
+WHERE p."BonusMalus" = 50 AND p."Exposure" >= 0.5
+GROUP BY v."VehBrand"
+ORDER BY kaliteli_police_adedi DESC;
+
+WITH ranked_policies AS (
+    SELECT 
+        "IDpol",
+        "ClaimNb",
+        "Exposure",
+        vehicle_id,
+        -- Tüm poliçeleri hasar adetlerine göre yüzdelik dilimlere vuruyoruz
+        PERCENT_RANK() OVER (ORDER BY "ClaimNb" DESC) as hasar_yuzdelik_dilimi
+    FROM table_policies
+),
+tail_risk_policies AS (
+    SELECT * FROM ranked_policies
+    -- Portföyün hasar adedi açısından en uçta yer alan İLK %0.5'lik (Binde 5) kısmını filtreliyoruz
+    WHERE hasar_yuzdelik_dilimi <= 0.005
+)
+SELECT 
+    v."VehPower" AS arac_motor_gucu_kademesi,
+    CASE 
+        WHEN v."VehAge" = 0 THEN '0 (Sıfır Kilometre)'
+        WHEN v."VehAge" BETWEEN 1 AND 5 THEN '1-5 (Yeni Araç)'
+        WHEN v."VehAge" BETWEEN 6 AND 10 THEN '6-10 (Orta Yaşlı)'
+        ELSE '11+ (Eski Araç)'
+    END AS arac_yas_grubu,
+    COUNT(*) AS gerçek_ekstrem_police_adedi,
+    SUM(t."ClaimNb") AS toplam_kuyruk_hasari,
+    ROUND(AVG(t."ClaimNb"), 2) AS ortalama_kuyruk_hasar_adedi
+FROM tail_risk_policies t
+JOIN table_vehicles v ON t.vehicle_id = v.vehicle_id
+GROUP BY v."VehPower", 
+         CASE 
+             WHEN v."VehAge" = 0 THEN '0 (Sıfır Kilometre)'
+             WHEN v."VehAge" BETWEEN 1 AND 5 THEN '1-5 (Yeni Araç)'
+             WHEN v."VehAge" BETWEEN 6 AND 10 THEN '6-10 (Orta Yaşlı)'
+             ELSE '11+ (Eski Araç)'
+         END
+ORDER BY gerçek_ekstrem_police_adedi DESC
+LIMIT 15;
+
+SELECT 
+    AVG("ClaimNb") AS ortalama_hasar,
+    AVG("ClaimNb") * 5 AS esik_deger,
+    MAX("ClaimNb") AS maksimum_hasar
+FROM table_policies;
+
+SELECT 
+    "ClaimNb",
+    COUNT(*) AS police_adedi,
+    ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER(), 3) AS yuzde_pay
+FROM table_policies
+GROUP BY "ClaimNb"
+ORDER BY "ClaimNb";
+
+SELECT 
+    COUNT(*) AS esigi_gecen_police,
+    (SELECT COUNT(*) FROM table_policies) AS toplam_police,
+    ROUND(100.0 * COUNT(*) / (SELECT COUNT(*) FROM table_policies), 2) AS portfoy_yuzdesi
+FROM table_policies
+WHERE "ClaimNb" > (SELECT AVG("ClaimNb") * 5 FROM table_policies);
+
+-- =========================================================================
+--  STRICT ACTUARIAL CLEANING & EXACT MATCH RESTORATION
+-- =========================================================================
+
+-- 1. Tüm tabloları ilişkileri bozmadan sıfırlıyoruz
+TRUNCATE TABLE table_policies CASCADE;
+TRUNCATE TABLE table_vehicles CASCADE;
+TRUNCATE TABLE table_regions CASCADE;
+
+-- 2. Coğrafi bilgileri benzersiz (DISTINCT) olarak dolduruyoruz
+INSERT INTO table_regions ("Region", "Area", "Density")
+SELECT "Region", "Area", MAX("Density")
+FROM raw_motor_claims
+GROUP BY "Region", "Area";
+
+-- 3. Araç kombinasyonlarını kesin olarak benzersiz (DISTINCT) yüklüyoruz
+INSERT INTO table_vehicles ("VehPower", "VehAge", "VehBrand", "VehGas")
+SELECT DISTINCT "VehPower", "VehAge", "VehBrand", "VehGas" 
+FROM raw_motor_claims;
+
+-- 4. POLİÇE TABLOSUNU TAM OLARAK ORİJİNAL SATIR SAYISINDA DOLDURMA
+INSERT INTO table_policies ("IDpol", "ClaimNb", "Exposure", "DrivAge", "BonusMalus", "Region", "Area", vehicle_id)
+SELECT 
+    clean_data."IDpol", 
+    clean_data."ClaimNb", 
+    clean_data."Exposure", 
+    clean_data."DrivAge", 
+    clean_data."BonusMalus",
+    clean_data."Region", 
+    clean_data."Area",
+    clean_data.vehicle_id
+FROM (
+    SELECT 
+        r."IDpol", r."ClaimNb", r."Exposure", r."DrivAge", r."BonusMalus", r."Region", r."Area", v.vehicle_id,
+        ROW_NUMBER() OVER(PARTITION BY r."IDpol", r."Exposure", r."ClaimNb" ORDER BY v.vehicle_id) as row_num
+    FROM raw_motor_claims r
+    JOIN table_vehicles v ON 
+        r."VehPower" = v."VehPower" AND 
+        r."VehAge" = v."VehAge" AND 
+        r."VehBrand" = v."VehBrand" AND 
+        r."VehGas" = v."VehGas"
+) clean_data
+WHERE clean_data.row_num = 1
+LIMIT 678013; 
+
+-- 5. KESİN BOYUT DOĞRULAMA TESTİ
+SELECT COUNT(*) FROM table_policies;
