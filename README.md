@@ -34,4 +34,4 @@ Projede analiz edilen 678.013 satırlık ham veri seti Kaggle üzerinden temin e
 
 ## 👤 Hazırlayan
 **Muhammet Kerim Sağlam**  
-Hacettepe Üniversitesi - Aktüerya Bilimleri Bölümü
+Hacettepe Üniversitesi - Aktüerya Bilimleri
